@@ -92,8 +92,6 @@ def generate_launch_description():
         }],
     )
 
-    # V4 Phase 1: motion_core is plan-only. It sends validated trajectories
-    # to hw_adapter via DispatchTrajectory, not directly to FJT.
     motion_core_node = Node(
         package='motion_core',
         executable='motion_core_node',
@@ -112,6 +110,24 @@ def generate_launch_description():
         remappings=[
             ('/yaskawa/joint_states', '/joint_states'),
         ],
+    )
+
+    servo_params = os.path.join(
+        get_package_share_directory('gp4_moveit_config'),
+        'config',
+        'gp4_servo.yaml'
+    )
+    
+    servo_node = Node(
+        package='moveit_servo',
+        executable='servo_node_main',
+        parameters=[
+            servo_params,
+            moveit_config.robot_description,
+            moveit_config.robot_description_semantic,
+            moveit_config.robot_description_kinematics,
+        ],
+        output='screen',
     )
 
     diagnostic_aggregator = Node(
@@ -145,4 +161,5 @@ def generate_launch_description():
         motion_core_node,
         diagnostic_aggregator,
         supervisor_node,
+        servo_node,
     ])
