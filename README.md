@@ -160,7 +160,7 @@ While an LLM naturally infers these via CLI strings, you can forcefully inject J
 
 ```bash
 ros2 topic pub --once /llm_raw_command std_msgs/msg/String \
-  "data: '{\"primitive_type\": \"LIN\", \"target_pose\": {\"x\": 0.3, \"y\": 0.0, \"z\": 0.2, \"roll\": 3.14, \"pitch\": 0.0, \"yaw\": 0.0}, \"velocity_scale\": 0.1}'"
+  "data: '{\"primitive_type\": \"LIN\", \"target_pose\": {\"position\": {\"x\": 0.3, \"y\": 0.0, \"z\": 0.2}, \"orientation\": {\"roll\": 3.14, \"pitch\": 0.0, \"yaw\": 0.0}}, \"velocity_scale\": 0.1}'"
 ```
 
 **2. Relative Base Link Offsets (MOVE_REL)**

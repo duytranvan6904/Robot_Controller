@@ -83,7 +83,7 @@ def generate_launch_description():
         parameters=[{
             # Fake hardware: the active controller action server is
             # gp4_arm_controller/follow_joint_trajectory (not /yaskawa/...)
-            "follow_joint_trajectory_action": "/controller_manager/follow_joint_trajectory",
+            "follow_joint_trajectory_action": "/gp4_arm_controller/follow_joint_trajectory",
             "dispatch_action_name": "/hw_adapter/dispatch_trajectory",
             "robot_status_topic": "/yaskawa/robot_status",
             "start_traj_mode_service": "",
