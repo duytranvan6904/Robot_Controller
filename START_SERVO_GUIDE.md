@@ -1,82 +1,111 @@
-# Hướng Dẫn Điều Khiển Quỹ Đạo Liên Tục GP4 Trong Thực Tế
+# Hướng Dẫn Điều Khiển Quỹ Đạo Liên Tục (Streaming) GP4
 
-Tài liệu này hướng dẫn chi tiết cách chạy hệ thống điều khiển liên tục (streaming tọa độ liên tiếp) cho tay máy Yaskawa GP4 **trên phần cứng thật**. Hệ thống này đặc biệt thiết kế để tích hợp với Camera AI, ML Inference hoặc thiết bị Teleoperation cầm tay.
+Tài liệu này hướng dẫn cách vận hành hệ thống điều khiển liên tục (Real-time Streaming) cho tay máy Yaskawa GP4 sử dụng **MoveIt Servo** kết hợp với **MotoROS2**. 
 
----
-
-## 💡 Lưu ý quan trọng: Khác biệt giữa RViz Mô phỏng và Thực tế
-Trong môi trường mô phỏng (`sim.launch.py`), do sử dụng *fake controller*, trạng thái `/joint_states` không tự động cập nhật lại thời gian thực sau khi nội suy xong. Bạn sẽ thấy hiện tượng robot phải "dừng lại và reset" mới plan được điểm tiếp theo.
-
-**Tuy nhiên trên phần cứng thật:** Trạng thái của các khớp động cơ (Encoder) được gửi liên tục về ROS 2 ở tần số cao. Điều này giúp hệ thống liên tục lấy được vị trí vật lý tuyệt đối của robot và mượt mà "tiếp nối" các quỹ đạo với nhau mà **không bao giờ bị khựng hay yêu cầu reset**.
+Kiến trúc này được tối ưu cho các ứng dụng yêu cầu độ phản hồi cao như:
+- Điều khiển bằng AI/Camera (Visual Servoing).
+- Teleoperation (Điều khiển từ xa bằng Joystick/Cảm biến).
+- Tránh vật cản động thông qua sensor.
 
 ---
 
-## 🛠 QUY TRÌNH CHẠY TRÊN PART CỨNG THẬT 
+## 🏗 KIẾN TRÚC HỆ THỐNG
 
-### 1. Khởi động phần cứng (Terminal 1)
-Bạn dọn dẹp các tiến trình cũ và khởi chạy trực tiếp kết nối với tủ điện Yaskawa YRC1000micro thay vì dùng mô phỏng.
+Luồng dữ liệu điều khiển được thực hiện như sau:
+1. **AI/User App**: Gửi lệnh vận tốc (Twist) tại tần số 30Hz - 100Hz.
+2. **MoveIt Servo**: Nhận Twist, tính toán động học ngược (IK) và nội suy mượt mà để tránh va chạm/singularity.
+3. **Servo Bridge**: Chuyển đổi quỹ đạo từ MoveIt Servo thành các điểm lẻ để gửi vào hàng đợi của Robot.
+4. **MotoROS2 (Robot)**: Thực thi các điểm trong hàng đợi với độ trễ tối thiểu.
 
+---
+
+## 🚀 QUY TRÌNH KHỞI ĐỘNG (5 Terminal)
+
+Để chạy hệ thống trên robot thật, hãy thực hiện theo thứ tự sau:
+
+### Terminal 1: Kết nối Robot (Hardware Interface)
+Khởi động kết nối vật lý với tủ điện YRC1000micro.
 ```bash
-cd ~/Downloads/gp4_ws
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-
-# Lệnh khởi động real hardware (cần sửa lại YOUR_ROBOT_IP nếu IP không mặc định)
-ros2 launch gp4_bringup hw.launch.py robot_ip:=192.168.1.33
+ros2 launch gp4_moveit_config real_robot.launch.py robot_ip:=192.168.1.33
 ```
-*Đảm bảo bạn nhìn thấy `hw_adapter_node` báo Controller đã `Active` và MotoROS2 đã báo `Connected`.*
+*Đảm bảo controller_manager báo "joint_state_broadcaster" và "gp4_arm_controller" đã Active.*
 
-
-### 2. Hai Phương Pháp Điều Khiển Liên Tục
-
-Trong thực tế hệ thống hiện tại của chúng ta, có **Hai cách (Option)** để thực thi chuỗi lệnh liên tục. Tùy thuộc vào yêu cầu của thuật toán AI mà bạn chọn cách phù hợp:
-
-#### Option A: Điều khiển thông qua `MOVE_REL` (Khuyên dùng & An toàn nhất)
-**Đặc điểm:** Đi qua đầy đủ kiến trúc bảo mật của hệ thống `AI -> Safety -> Motion Core -> Hardware`. Cực kỳ an toàn vì hệ thống sẽ kiểm tra va chạm (Collision scene) và tự động rà mượt gia tốc Ruckig trước khi gửi.
-
-1. **Khởi chạy Controller Client (Terminal 2):**
+### Terminal 2: MoveIt Core & RViz
+Khởi động bộ não MoveIt để quản lý mô hình và va chạm.
 ```bash
-cd ~/Downloads/gp4_ws
-source install/setup.bash
-python3 src/gp4_bringup/test_continuous_move.py
+ros2 launch gp4_moveit_config gp4_start.launch.py
 ```
 
-2. **Áp dụng cho Code AI của bạn:** 
-Bạn gọi action client `/execute_motion` tương tự file thử nghiệm. Liên tục bắn các bước `MOVE_REL` (delta_x, delta_y, delta_z). 
-Vì kiến trúc của chúng tôi hỗ trợ buffering chuẩn xác, các mục tiêu sẽ được nối đuôi nhau di chuyển tay máy liên tiếp.
+### Terminal 3: MoveIt Servo
+Khởi động servo trong thực tế:
+```bash
+ros2 service call /yaskawa/start_point_queue_mode motoros2_interfaces/srv/StartPointQueueMode "{}"
+```
 
-#### Option B: Điều khiển trần (Raw) bằng MoveIt Servo 30Hz
-**Đặc điểm:** Bypass màng lọc an toàn `motion_core`, giao tiếp trực tiếp với bộ điều khiển để đạt tốc độ nội suy phản hồi **độ trễ bằng 0** (chuẩn 30Hz Teleoperation). 
-*Chỉ dùng khi bạn tin tưởng hoàn toàn vào dữ liệu do AI xuất ra không bị nhiễu làm gãy trục.*
+Khởi động node nội suy thời gian thực.
+```bash
+ros2 launch gp4_moveit_config gp4_servo.launch.py
+```
 
-1. Trong `hw.launch.py`, bảo đảm node `servo_node` đã được thêm vào luồng Launch.
-2. Bạn cần đẩy API Twist liên tục (ví dụ Python cho luồng AI):
+### Terminal 4: Servo Bridge
+Node trung gian chuyển tiếp dữ liệu từ Servo sang Robot.
+```bash
+python3 src/gp4_bringup/scripts/servo_bridge.py
+```
+
+### Terminal 5: Script Test/AI 
+Chạy kịch bản điều khiển thực tế (ví dụ: robot di chuyển hình sin).
+```bash
+python3 src/gp4_bringup/scripts/test_continuous_move.py
+```
+
+---
+
+## 💡 LƯU Ý KỸ THUẬT & AN TOÀN
+
+### 1. Cơ chế nội suy (Interpolation)
+Khác với việc lập trình điểm-điểm (PTP) thông thường, hệ thống này liên tục "nhồi" các điểm vào robot. 
+- Nếu bạn ngừng gửi lệnh, Robot sẽ dừng lại tại vị trí hiện tại.
+- MoveIt Servo sẽ tự động tính toán để robot dừng lại an toàn nếu sắp va chạm hoặc chạm giới hạn khớp.
+
+### 2. Kiểm soát vận tốc
+Trong file `test_continuous_move.py`, vận tốc được quy định bởi các thông số:
+```python
+msg.twist.linear.x = 0.03  # Tốc độ 3cm/s theo trục X
+```
+> [!WARNING]
+> Luôn bắt đầu với vận tốc thấp (v < 0.05 m/s) khi thử nghiệm thuật toán AI mới.
+
+### 3. Nút dừng khẩn cấp (E-Stop)
+- Luôn giữ Teach Pendant trên tay.
+- Nếu thấy robot rung lắc hoặc di chuyển lạ, nhấn **E-Stop** ngay lập tức.
+- Bạn cũng có thể tắt Terminal 5 (Ctrl+C), script `test_continuous_move.py` đã được lập trình để gửi lệnh vận tốc bằng 0 khi thoát.
+
+### 4. Xử lý lỗi "Tolerance Exceeded"
+Nếu trên Terminal 1 xuất hiện cảnh báo trễ, hãy kiểm tra:
+- Tần suất gửi lệnh của AI có ổn định không (nên dùng Timer 30Hz).
+- Tải của CPU (nếu AI quá nặng làm trễ luồng gửi lệnh).
+
+---
+
+## 🛠 TÙY CHỈNH CHO PROJECT AI
+
+Để tích hợp vào Code AI của bạn, hãy sử dụng đoạn mã mẫu sau:
+
 ```python
 from geometry_msgs.msg import TwistStamped
-import rclpy
+from std_srvs.srv import Trigger
 
-# ... (Khởi tạo node rclpy)
-publisher = node.create_publisher(TwistStamped, '/servo_node/delta_twist_cmds', 10)
+# 1. Start Servo (chỉ gọi 1 lần khi bắt đầu)
+start_client = node.create_client(Trigger, '/servo_node/start_servo')
+start_client.call_async(Trigger.Request())
+
+# 2. Publish Twist (gọi liên tục trong vòng lặp AI/Camera)
+twist_pub = node.create_publisher(TwistStamped, '/servo_node/delta_twist_cmds', 10)
 
 msg = TwistStamped()
-msg.header.frame_id = 'base_link'
-
-# Liên tục nhồi vận tốc mong muốn (m/s) vào trục X, Y, Z (Tần suất 30 fps từ Camera)
-msg.twist.linear.x = 0.05  # Tiến 5cm/s
-msg.twist.linear.y = 0.0
-msg.twist.linear.z = 0.0
-
-publisher.publish(msg)
+msg.header.frame_id = 'base_link' 
+msg.twist.linear.x = camera_delta_x * gain
+msg.twist.linear.y = camera_delta_y * gain
+twist_pub.publish(msg)
 ```
-
----
-
-## 🚦 Những Kiểm Tra An Toàn (Safety Checks) Khi Chạy Thật
-Vì đang gửi tọa độ liên tục, hãy tuân thủ 3 nguyên tắc sống còn khi làm việc với robot công nghiệp:
-
-1. **Lệnh STOP khẩn cấp (E-Stop):**
-Luôn có 1 tay cầm bộ Teach Pendant của Yaskawa. Khi robot có xu hướng di chuyển bất thường, **nhấn ngay nút E-Stop màu đỏ**.
-2. **Setup Vận Tốc Nhỏ Ban Đầu:**
-Tại file script AI, hãy để hệ số Vận tốc ban đầu ở mức ~`0.10` (10% tốc độ thực) và Biên độ thay đổi `Tối đa 1 cm/bước` để test hướng đi của robot.
-3. **Quan sát thông điệp Cảnh báo (Warn):**
-Nhìn vào Terminal 1, nếu `hw_adapter_node` báo dòng màu vàng `Tolerance exceeded` hay `Delay...`, tức là vòng lặp xuất tọa độ tốc độ 30Hz của Camera đang bị trễ so với chu kỳ vật lý, bạn cần tối ưu hóa code inference của AI nhẹ lại để bù khung hình hình ảnh.
