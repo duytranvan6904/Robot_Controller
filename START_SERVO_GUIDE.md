@@ -22,7 +22,7 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 
 # Lệnh khởi động real hardware (cần sửa lại YOUR_ROBOT_IP nếu IP không mặc định)
-ros2 launch gp4_bringup hw.launch.py robot_ip:=192.168.1.31
+ros2 launch gp4_bringup hw.launch.py robot_ip:=192.168.1.33
 ```
 *Đảm bảo bạn nhìn thấy `hw_adapter_node` báo Controller đã `Active` và MotoROS2 đã báo `Connected`.*
 

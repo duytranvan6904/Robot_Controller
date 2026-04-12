@@ -48,6 +48,7 @@ def generate_launch_description():
         "publish_transforms_updates": True,
         "publish_robot_description": True,
         "publish_robot_description_semantic": True,
+        "provide_planning_scene_service": True,
     }
 
     # ── move_group node ──────────────────────────────────────────────────
@@ -58,10 +59,6 @@ def generate_launch_description():
         parameters=[
             moveit_config.to_dict(),
             planning_scene_monitor_parameters,
-        ],
-        ros_arguments=['--log-level', 'class_loader.ClassLoader:=FATAL'],
-        remappings=[
-            ('/joint_states', '/yaskawa/joint_states'),
         ],
     )
 
@@ -105,7 +102,7 @@ def generate_launch_description():
             moveit_config.robot_description,
             {
                 "rate": 43,
-                "source_list": ["/yaskawa/joint_states"],
+                "source_list": ["/yaskawa/joint_states_synced"],
             },
         ],
     )
@@ -120,6 +117,14 @@ def generate_launch_description():
                    "0.0", "0.0", "world", "base_link"],
     )
 
+    # ── Restamp Node ─────────────────────────────────────────────────────
+    restamp_node = Node(
+        package="gp4_bringup",
+        executable="restamp_joint_states.py",
+        name="restamp_joint_states",
+        output="screen",
+    )
+
     return LaunchDescription(
         [
             db_arg,
@@ -128,5 +133,6 @@ def generate_launch_description():
             joint_state_publisher,
             run_move_group_node,
             rviz_node,
+            restamp_node,
         ]
     )

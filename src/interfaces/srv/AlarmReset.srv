@@ -1,5 +1,0 @@
-# Request — no fields; alarm reset is unconditional
----
-# Response
-bool success
-string message
