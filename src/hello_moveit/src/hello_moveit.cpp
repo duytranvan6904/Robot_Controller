@@ -44,16 +44,8 @@ int main(int argc, char* argv[])
 
   //-----------------------------------------------------
 
-  rclcpp::NodeOptions node_options;
-  node_options.automatically_declare_parameters_from_overrides(true);
-  node_options.arguments({ "--ros-args", "-r", "/joint_states:=/yaskawa/joint_states" });
-  auto const node = std::make_shared<rclcpp::Node>("hello_moveit", node_options);
-
-  // Tạo spinner để Node có thể liên tục lắng nghe Topic dưới nền
-  rclcpp::executors::SingleThreadedExecutor executor;
-  executor.add_node(node);
-  std::thread spinner([&executor]() { executor.spin(); });
-  spinner.detach();
+  auto const node = std::make_shared<rclcpp::Node>(
+      "hello_moveit", rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
 
   // Create a ROS logger
   auto const logger = rclcpp::get_logger("hello_moveit");
@@ -62,70 +54,44 @@ int main(int argc, char* argv[])
   using moveit::planning_interface::MoveGroupInterface;
   auto move_group_interface = MoveGroupInterface(node, "gp4_arm");
 
-  // Lấy vị trí hiện tại làm điểm xuất phát
-  std::vector<geometry_msgs::msg::Pose> waypoints;
-  geometry_msgs::msg::Pose start_pose = move_group_interface.getCurrentPose().pose;
-  waypoints.push_back(start_pose);
-
-  // Set a target Pose (cùng hướng hiện tại, chỉ thay đổi x, y, z)
-  geometry_msgs::msg::Pose target_pose = start_pose;
-  target_pose.position.x = 0.25;
-  target_pose.position.y = 0.20;
-  target_pose.position.z = 0.4;
-  // KHÔNG đổi orientation để tránh lỗi Singularity/kẹt khớp khi đang di chuyển
-  waypoints.push_back(target_pose);
+  // Set a target Pose
+  auto const target_pose = [] {
+    geometry_msgs::msg::Pose msg;
+    msg.orientation.x = 0.0;
+    msg.orientation.y = 0.5;
+    msg.orientation.z = 0.0;
+    msg.orientation.w = 0.866;
+    msg.position.x = 0.25;
+    msg.position.y = 0.20;
+    msg.position.z = 0.4;
+    return msg;
+  }();
+  move_group_interface.setPoseTarget(target_pose);
 
   // Đặt giới hạn tốc độ và gia tốc (0.1 = 10%)
   move_group_interface.setMaxVelocityScalingFactor(0.1);
   move_group_interface.setMaxAccelerationScalingFactor(0.1);
 
-  moveit_msgs::msg::RobotTrajectory trajectory;
-  const double jump_threshold = 0.0;  // Tắt jump threshold
-  const double eef_step = 0.05;       // Bước nội suy 5cm để đỡ gắt và giật
+  // Create a plan to that target pose
+  auto const [success, plan] = [&move_group_interface] {
+    moveit::planning_interface::MoveGroupInterface::Plan msg;
+    auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+    return std::make_pair(ok, msg);
+  }();
 
-  RCLCPP_INFO(logger, "Đang tính toán Cartesian Path...");
-  double fraction = move_group_interface.computeCartesianPath(waypoints, eef_step, jump_threshold, trajectory);
-
-  if (fraction > 0.9)
+  std::this_thread::sleep_for(std::chrono::seconds(5));
+  // Execute the plan
+  if (success)
   {
-    RCLCPP_INFO(logger, "Planning OK! (%.2f%% completed).", fraction * 100.0);
-
-    // Làm chậm và mượt hóa quỹ đạo tuyến tính bằng cách scale giãn thời gian nội suy
-    double scale_factor = 4.0;  // Chạy chậm đi 4 lần
-    for (auto& point : trajectory.joint_trajectory.points)
-    {
-      double time_in_sec = point.time_from_start.sec + point.time_from_start.nanosec * 1e-9;
-      time_in_sec *= scale_factor;
-      point.time_from_start.sec = std::floor(time_in_sec);
-      point.time_from_start.nanosec = (time_in_sec - point.time_from_start.sec) * 1e9;
-
-      for (size_t i = 0; i < point.velocities.size(); ++i)
-      {
-        point.velocities[i] /= scale_factor;
-        if (!point.accelerations.empty() && i < point.accelerations.size())
-        {
-          point.accelerations[i] /= (scale_factor * scale_factor);
-        }
-      }
-    }
-
-    moveit::planning_interface::MoveGroupInterface::Plan plan;
-    plan.trajectory_ = trajectory;
-    RCLCPP_INFO(logger, "Thực thi Cartesian Path (đã được làm mượt)...");
-
-    auto result = move_group_interface.execute(plan);
-    if (result == moveit::core::MoveItErrorCode::SUCCESS)
-    {
-      RCLCPP_INFO(logger, "Execution completed successfully.");
-    }
-    else
-    {
-      RCLCPP_ERROR(logger, "Execution failed with error code: %d", result.val);
-    }
+    RCLCPP_INFO(logger, "Planning OK!");
+    // move_group_interface.execute(plan);
+    move_group_interface.asyncExecute(plan);
+    std::this_thread::sleep_for(std::chrono::seconds(10));
+    RCLCPP_INFO(logger, "end of waiting");
   }
   else
   {
-    RCLCPP_ERROR(logger, "Planning failed! Chỉ hoàn thành %.2f%% đường đi.", fraction * 100.0);
+    RCLCPP_ERROR(logger, "Planning failed!");
   }
 
   // Execute the plan

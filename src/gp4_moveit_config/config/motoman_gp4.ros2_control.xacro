@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
     <xacro:macro name="motoman_gp4_ros2_control" params="name initial_positions_file use_fake_hardware:=false robot_ip:=192.168.1.33 controller_port:=50240">
-        <xacro:property name="initial_positions" value="${load_yaml(initial_positions_file)['initial_positions']}"/>
+        <xacro:property name="initial_positions" value="${xacro.load_yaml(initial_positions_file)['initial_positions']}"/>
         <ros2_control name="${name}" type="system">
             <hardware>
                 <xacro:if value="${use_fake_hardware}">

@@ -1,3 +1,0 @@
-planning_plugins:
-  - pilz_industrial_motion_planner/CommandPlanner
-default_planner_config: LIN
