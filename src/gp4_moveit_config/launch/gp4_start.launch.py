@@ -94,18 +94,19 @@ def generate_launch_description():
 
     # ── Joint State Publisher ────────────────────────────────────────────
     #    Lắng nghe /yaskawa/joint_states từ MotoROS2 driver
-    joint_state_publisher = Node(
-        package="joint_state_publisher",
-        executable="joint_state_publisher",
-        name="joint_state_publisher",
-        parameters=[
-            moveit_config.robot_description,
-            {
-                "rate": 43,
-                "source_list": ["/yaskawa/joint_states_synced"],
-            },
-        ],
-    )
+    # Joint State Publisher is no longer needed because restamp_node publishes directly to /joint_states
+    # joint_state_publisher = Node(
+    #     package="joint_state_publisher",
+    #     executable="joint_state_publisher",
+    #     name="joint_state_publisher",
+    #     parameters=[
+    #         moveit_config.robot_description,
+    #         {
+    #             "rate": 43,
+    #             "source_list": ["/yaskawa/joint_states_synced"],
+    #         },
+    #     ],
+    # )
 
     # ── Static TF (world -> base_link) ───────────────────────────────────
     static_tf = Node(
@@ -130,7 +131,7 @@ def generate_launch_description():
             db_arg,
             static_tf,
             robot_state_publisher,
-            joint_state_publisher,
+            # joint_state_publisher,
             run_move_group_node,
             rviz_node,
             restamp_node,

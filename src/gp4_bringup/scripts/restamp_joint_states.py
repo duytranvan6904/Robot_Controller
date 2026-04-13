@@ -6,8 +6,8 @@ from sensor_msgs.msg import JointState
 class JointStateRestamper(Node):
     def __init__(self):
         super().__init__('joint_state_restamper')
-        # We publish to a new topic that joint_state_publisher will listen to
-        self.pub = self.create_publisher(JointState, '/yaskawa/joint_states_synced', 10)
+        # We publish to the main joint_states topic
+        self.pub = self.create_publisher(JointState, '/joint_states', 10)
         # We subscribe to the raw MotoROS2 joints
         self.sub = self.create_subscription(JointState, '/yaskawa/joint_states', self.cb, 10)
         self.get_logger().info('JointState Restamper started to fix Yaskawa clock skew.')

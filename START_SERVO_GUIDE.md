@@ -22,6 +22,10 @@ Luồng dữ liệu điều khiển được thực hiện như sau:
 ## 🚀 QUY TRÌNH KHỞI ĐỘNG (5 Terminal)
 
 Để chạy hệ thống trên robot thật, hãy thực hiện theo thứ tự sau:
+```bash
+cd ~/Downloads/gp4_ws
+source install/setup.bash
+```
 
 ### Terminal 1: Kết nối Robot (Hardware Interface)
 Khởi động kết nối vật lý với tủ điện YRC1000micro.

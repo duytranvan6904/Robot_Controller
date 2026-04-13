@@ -39,9 +39,9 @@ class TwistPublisher(Node):
         
         # Test dịch chuyển: Tiến và lùi theo hình sin trên trục X
         # Biên độ nhỏ để an toàn (e.g. max vận tốc = 0.05 m/s)
-        msg.twist.linear.x = 0.03 * math.sin(self.dt)
+        msg.twist.linear.x = 0.0
         msg.twist.linear.y = 0.0
-        msg.twist.linear.z = 0.0
+        msg.twist.linear.z = 0.05 * math.sin(self.dt)
 
         # Không sinh vận tốc xoay tĩnh
         msg.twist.angular.x = 0.0
@@ -49,6 +49,7 @@ class TwistPublisher(Node):
         msg.twist.angular.z = 0.0
 
         self.publisher_.publish(msg)
+        self.get_logger().info(f'COMMAND: MOVING IN Z-AXIS (z={msg.twist.linear.z:.3f})')
         self.dt += 0.05
 
 def main(args=None):
