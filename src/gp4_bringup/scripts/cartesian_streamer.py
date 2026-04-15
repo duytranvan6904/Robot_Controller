@@ -40,14 +40,12 @@ from rclpy.executors import MultiThreadedExecutor
 from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
 from std_msgs.msg import Float64MultiArray
 from sensor_msgs.msg import JointState
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from trajectory_msgs.msg import JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 
 from moveit_msgs.srv import GetPositionIK, GetPositionFK
 from moveit_msgs.msg import PositionIKRequest, RobotState
-from motoros2_interfaces.srv import StartTrajMode
-from control_msgs.action import FollowJointTrajectory
-from rclpy.action import ActionClient
+from motoros2_interfaces.srv import StartPointQueueMode, QueueTrajPoint
 from std_srvs.srv import Trigger
 
 # ── Hằng số ────────────────────────────────────────────────────────
@@ -76,7 +74,7 @@ SMOOTH_ALPHA = 0.5       # Tăng lên để phản hồi nhanh hơn
 # An toàn: bước nhảy joint tối đa cho phép mỗi điểm (rad)
 MAX_JOINT_DELTA = 0.5    # Tăng lên để cho phép di chuyển rõ rệt trong 1 giây
 
-# Debug watchdog: nếu goal được accept nhưng joint gần như đứng yên
+# Debug watchdog: nếu queue point được accept nhưng joint gần như đứng yên
 NO_MOTION_WARN_SEC = 3.0
 NO_MOTION_EPS_RAD = 1e-3
 NO_MOTION_MIN_ACCEPTED_POINTS = 6
@@ -92,14 +90,16 @@ class CartesianStreamer(Node):
         # ── State ────────────────────────────────────────────────
         self._current_joints: list[float] = [0.0] * 6
         self._got_joints = False
-        self._traj_mode_active = False
-        self._traj_seeded = False
-        self._goal_inflight = False
+        self._queue_mode_active = False
+        self._first_queue_point_sent = False
+        self._queue_call_inflight = False
         self._accepted_points = 0
+        self._queue_debug_log_count = 0
+        self._active_queue_service_name = ''
         self._last_motion_time = self.get_clock().now()
         self._last_warn_time = self.get_clock().now()
         self._tick_count = 0
-        self._goal_sent_count = 0
+        self._queue_sent_count = 0
         self._rate_window_start = self.get_clock().now()
 
         # Target Cartesian pose (được smooth từng bước)
@@ -134,11 +134,17 @@ class CartesianStreamer(Node):
         self._ik_cli = self.create_client(
             GetPositionIK, '/compute_ik', callback_group=self._cb)
 
-        self._start_traj_cli = self.create_client(
-            StartTrajMode, '/yaskawa/start_traj_mode',
+        self._start_queue_cli = self.create_client(
+            StartPointQueueMode, '/yaskawa/start_point_queue_mode',
             callback_group=self._cb)
-        self._traj_action = ActionClient(
-            self, FollowJointTrajectory, '/yaskawa/follow_joint_trajectory',
+        self._queue_point_cli = self.create_client(
+            QueueTrajPoint, '/yaskawa/queue_traj_point',
+            callback_group=self._cb)
+        self._queue_point_cli_alt = self.create_client(
+            QueueTrajPoint, '/yaskawa/queue_point',
+            callback_group=self._cb)
+        self._queue_point_cli_alt2 = self.create_client(
+            QueueTrajPoint, '/queue_point',
             callback_group=self._cb)
 
         self._stop_traj_cli = self.create_client(
@@ -258,39 +264,49 @@ class CartesianStreamer(Node):
 
     def _step_3_stop_traj_mode(self):
         self.get_logger().info('Gọi stop_traj_mode để giải phóng mode cũ...')
-        self._call_trigger_chained(self._stop_traj_cli, 'stop_traj_mode', self._step_4_start_traj_mode)
+        self._call_trigger_chained(self._stop_traj_cli, 'stop_traj_mode', self._step_4_start_queue_mode)
 
-    def _step_4_start_traj_mode(self):
-        self.get_logger().info('Bật StartTrajMode (follow_joint_trajectory)...')
-        if not self._start_traj_cli.wait_for_service(timeout_sec=3.0):
-            self.get_logger().error('Service StartTrajMode không khả dụng!')
+    def _step_4_start_queue_mode(self):
+        self.get_logger().info('Bật StartPointQueueMode (queue_traj_point streaming)...')
+        if not self._start_queue_cli.wait_for_service(timeout_sec=3.0):
+            self.get_logger().error('Service StartPointQueueMode không khả dụng!')
             return
-        fut = self._start_traj_cli.call_async(StartTrajMode.Request())
+        fut = self._start_queue_cli.call_async(StartPointQueueMode.Request())
         
         def _done(f):
             res = f.result()
             self.get_logger().info(
-                f'StartTrajMode response: code={res.result_code.value}, msg="{res.message}"'
+                f'StartPointQueueMode response: code={res.result_code.value}, msg="{res.message}"'
             )
             if res.result_code.value == 1:
-                self._traj_mode_active = True
-                self.get_logger().info('✓ Trajectory Mode active. Sẵn sàng stream.')
+                self._queue_mode_active = True
+                self._first_queue_point_sent = False
+                self.get_logger().info('✓ Point Queue Mode active. Sẵn sàng stream.')
             else:
-                self.get_logger().error(f'StartTrajMode FAILED: {res.message}')
+                self.get_logger().error(f'StartPointQueueMode FAILED: {res.message}')
         fut.add_done_callback(_done)
 
     def _call_trigger_chained(self, client, name, next_step_cb):
-        """Helper để gọi Trigger service và chuyển sang bước tiếp theo."""
+        """Helper để gọi service bất kỳ và chuyển sang bước tiếp theo."""
         if not client.wait_for_service(timeout_sec=3.0):
             self.get_logger().warn(f'Service {name} không khả dụng, bỏ qua.')
             next_step_cb()
             return
 
-        fut = client.call_async(Trigger.Request())
+        req = client.srv_type.Request()
+        fut = client.call_async(req)
         def _done(f):
             try:
                 res = f.result()
-                self.get_logger().info(f'{name}: success={res.success}, msg="{res.message}"')
+                code = getattr(getattr(res, 'result_code', None), 'value', 'N/A')
+                msg = getattr(res, 'message', '')
+                success = getattr(res, 'success', None)
+                if success is None:
+                    self.get_logger().info(f'{name}: code={code}, msg="{msg}"')
+                else:
+                    self.get_logger().info(
+                        f'{name}: success={success}, code={code}, msg="{msg}"'
+                    )
             except Exception as e:
                 self.get_logger().error(f'Error calling {name}: {e}')
             next_step_cb()
@@ -301,79 +317,81 @@ class CartesianStreamer(Node):
     # ═══════════════════════════════════════════════════════════════
 
     def _stream_tick(self):
-        if not self._traj_mode_active or not self._got_joints:
-            return
+        try:
+            if not self._queue_mode_active or not self._got_joints:
+                return
 
-        self._tick_count += 1
-        self._log_runtime_rates()
-        self._check_no_motion_watchdog()
+            self._tick_count += 1
+            self._log_runtime_rates()
+            self._check_no_motion_watchdog()
 
-        # ── Bước 0: Khởi tạo ─────────────────────────────────────
-        if not self._traj_seeded:
-            # Bootstrap initial EE pose via FK
-            initial_pose = self._solve_fk_sync(list(self._current_joints))
-            if initial_pose:
-                self._current_ee_pose = initial_pose
-                fb = PoseStamped()
-                fb.header.frame_id = BASE_FRAME
-                fb.header.stamp = self.get_clock().now().to_msg()
-                fb.pose = initial_pose
-                self._ee_pub.publish(fb)
-                self.get_logger().info('Bootstrap EE pose via FK successful.')
+            # ── Bước 0: Khởi tạo ─────────────────────────────────────
+            if not self._first_queue_point_sent:
+                # Bootstrap initial EE pose via FK
+                initial_pose = self._solve_fk_sync(list(self._current_joints))
+                if initial_pose:
+                    self._current_ee_pose = initial_pose
+                    fb = PoseStamped()
+                    fb.header.frame_id = BASE_FRAME
+                    fb.header.stamp = self.get_clock().now().to_msg()
+                    fb.pose = initial_pose
+                    self._ee_pub.publish(fb)
+                    self.get_logger().info('Bootstrap EE pose via FK successful.')
 
-            self._traj_seeded = True
-            self.get_logger().info('Đã seed trajectory streamer tại vị trí hiện tại.')
-            return
+                # Quy tắc queue mode: điểm đầu tiên phải đúng trạng thái hiện tại, t=0, v=0.
+                if self._send_joint_point(list(self._current_joints), force_seed=True):
+                    self._first_queue_point_sent = True
+                    self.get_logger().info('Đã gửi first queue point (current joints).')
+                return
 
-        if self._goal_inflight:
-            return
+            if self._target_pose is None:
+                return   # Chưa có lệnh — đứng yên
 
-        if self._target_pose is None:
-            return   # Chưa có lệnh — đứng yên
+            # ── Bước 1: Smooth pose (interpolate về target) ──────────
+            smoothed = self._smooth_pose(self._target_pose)
 
-        # ── Bước 1: Smooth pose (interpolate về target) ──────────
-        smoothed = self._smooth_pose(self._target_pose)
+            # ── Bước 2: Giải IK ──────────────────────────────────────
+            joint_solution = self._solve_ik_sync(smoothed)
 
-        # ── Bước 2: Giải IK ──────────────────────────────────────
-        joint_solution = self._solve_ik_sync(smoothed)
+            if joint_solution is None:
+                # IK thất bại → giữ vị trí cũ
+                self._ik_fail_count += 1
+                if self._ik_fail_count % 10 == 1:
+                    self.get_logger().warn(
+                        f'IK thất bại {self._ik_fail_count} lần liên tiếp. '
+                        'Robot giữ nguyên vị trí.')
+                return
 
-        if joint_solution is None:
-            # IK thất bại → giữ vị trí cũ
-            self._ik_fail_count += 1
-            if self._ik_fail_count % 10 == 1:
+            # ── An toàn: kiểm tra bước nhảy joint ────────────────────
+            max_delta = max(abs(j - c) for j, c in
+                            zip(joint_solution, self._current_joints))
+            if max_delta > MAX_JOINT_DELTA:
                 self.get_logger().warn(
-                    f'IK thất bại {self._ik_fail_count} lần liên tiếp. '
-                    'Robot giữ nguyên vị trí.')
-            return
+                    f'IK solution quá xa vị trí hiện tại '
+                    f'(max_delta={max_delta:.3f} rad > {MAX_JOINT_DELTA}). '
+                    f'Bỏ qua để bảo vệ robot.',
+                    throttle_duration_sec=1.0)
+                return
 
-        # ── An toàn: kiểm tra bước nhảy joint ────────────────────
-        max_delta = max(abs(j - c) for j, c in
-                        zip(joint_solution, self._current_joints))
-        if max_delta > MAX_JOINT_DELTA:
-            self.get_logger().warn(
-                f'IK solution quá xa vị trí hiện tại '
-                f'(max_delta={max_delta:.3f} rad > {MAX_JOINT_DELTA}). '
-                f'Bỏ qua để bảo vệ robot.',
-                throttle_duration_sec=1.0)
-            return
+            self._ik_fail_count = 0
+            self._last_ok_joints = joint_solution
+            self._current_ee_pose = smoothed  # cập nhật EE pose
 
-        self._ik_fail_count = 0
-        self._last_ok_joints = joint_solution
-        self._current_ee_pose = smoothed  # cập nhật EE pose
+            self.get_logger().info(
+                f'IK OK → joints: [{joint_solution[0]:.3f}, {joint_solution[1]:.3f}, ...]',
+                throttle_duration_sec=2.0)
 
-        self.get_logger().info(
-            f'IK OK → joints: [{joint_solution[0]:.3f}, {joint_solution[1]:.3f}, ...]',
-            throttle_duration_sec=2.0)
+            # ── Bước 3: Gửi xuống robot ──────────────────────────────
+            self._send_joint_point(joint_solution)
 
-        # ── Bước 3: Gửi xuống robot ──────────────────────────────
-        self._send_joint_goal(joint_solution)
-
-        # ── Bước 4: Publish feedback EE pose ─────────────────────
-        fb = PoseStamped()
-        fb.header.frame_id = BASE_FRAME
-        fb.header.stamp = self.get_clock().now().to_msg()
-        fb.pose = smoothed
-        self._ee_pub.publish(fb)
+            # ── Bước 4: Publish feedback EE pose ─────────────────────
+            fb = PoseStamped()
+            fb.header.frame_id = BASE_FRAME
+            fb.header.stamp = self.get_clock().now().to_msg()
+            fb.pose = smoothed
+            self._ee_pub.publish(fb)
+        except Exception as e:
+            self.get_logger().error(f'_stream_tick exception: {e}')
 
     # ═══════════════════════════════════════════════════════════════
     # IK SOLVER (thread-safe, không dùng spin_until_future_complete)
@@ -539,75 +557,81 @@ class CartesianStreamer(Node):
         return Quaternion(x=r[0], y=r[1], z=r[2], w=r[3])
 
     # ═══════════════════════════════════════════════════════════════
-    # GỬI GOAL XUỐNG ROBOT (FOLLOW_JOINT_TRAJECTORY)
+    # GỬI ĐIỂM XUỐNG ROBOT (QUEUE_TRAJ_POINT)
     # ═══════════════════════════════════════════════════════════════
 
-    def _send_joint_goal(self, joints: list[float]):
-        if not self._traj_action.wait_for_server(timeout_sec=0.05):
+    def _send_joint_point(self, joints: list[float], force_seed: bool = False):
+        if self._queue_call_inflight:
+            return False
+        queue_cli = self._select_queue_client()
+        if queue_cli is None:
             self.get_logger().warn(
-                'Action /yaskawa/follow_joint_trajectory chưa sẵn sàng.',
+                'Service queue_point/queue_traj_point chưa sẵn sàng.',
                 throttle_duration_sec=1.0
             )
-            return
+            return False
+        if not self._active_queue_service_name:
+            self._active_queue_service_name = getattr(queue_cli, 'srv_name', '<unknown>')
+            self.get_logger().info(f'Đang stream qua service: {self._active_queue_service_name}')
 
-        goal = FollowJointTrajectory.Goal()
-        traj = JointTrajectory()
-        traj.joint_names = JOINT_NAMES
-        traj.header.stamp = self.get_clock().now().to_msg()
+        point = JointTrajectoryPoint()
+        request = QueueTrajPoint.Request()
+        request.joint_names = JOINT_NAMES
 
-        p0 = JointTrajectoryPoint()
-        p0.positions = list(self._current_joints)
-        p0.velocities = [0.0] * len(JOINT_NAMES)
-        p0.time_from_start = Duration(sec=0, nanosec=0)
+        if force_seed:
+            point.positions = list(self._current_joints)
+            point.velocities = [0.0] * len(JOINT_NAMES)
+            point.time_from_start = Duration(sec=0, nanosec=0)
+        else:
+            point.positions = [float(j) for j in joints]
+            dt = max(POINT_DURATION_SEC, 1e-3)
+            point.velocities = [
+                float((target - current) / dt)
+                for target, current in zip(joints, self._current_joints)
+            ]
+            sec = int(dt)
+            nanosec = int((dt - sec) * 1e9)
+            point.time_from_start = Duration(sec=sec, nanosec=nanosec)
+        request.point = point
 
-        p1 = JointTrajectoryPoint()
-        p1.positions = [float(j) for j in joints]
-        p1.velocities = [0.0] * len(JOINT_NAMES)
-        p1.time_from_start = Duration(sec=0, nanosec=int(POINT_DURATION_SEC * 1e9))
+        self._queue_call_inflight = True
+        self._queue_sent_count += 1
+        fut = queue_cli.call_async(request)
+        fut.add_done_callback(self._on_queue_result)
+        return True
 
-        traj.points = [p0, p1]
-        goal.trajectory = traj
-
-        self._goal_inflight = True
-        self._goal_sent_count += 1
-        fut = self._traj_action.send_goal_async(goal)
-        fut.add_done_callback(self._on_goal_response)
-
-    def _on_goal_response(self, future):
+    def _on_queue_result(self, future):
+        self._queue_call_inflight = False
         try:
-            goal_handle = future.result()
-        except Exception as e:
-            self._goal_inflight = False
-            self.get_logger().error(f'Lỗi gửi FollowJointTrajectory goal: {e}')
-            return
-
-        if not goal_handle.accepted:
-            self._goal_inflight = False
-            self.get_logger().warn('FollowJointTrajectory goal bị reject.', throttle_duration_sec=1.0)
-            return
-
-        self._accepted_points += 1
-        if self._accepted_points % 10 == 0:
-            self.get_logger().info(
-                f'FollowJointTrajectory accepted count={self._accepted_points}'
-            )
-
-        result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self._on_goal_result)
-
-    def _on_goal_result(self, future):
-        self._goal_inflight = False
-        try:
-            result_wrap = future.result()
-            status = result_wrap.status
-            err = result_wrap.result.error_code
-            if status != 4 or err != 0:
-                self.get_logger().warn(
-                    f'Goal result status={status}, error_code={err}',
+            res = future.result()
+            # SUCCESS của QueueResultEnum là 1, không phải 0.
+            if res.result_code.value != 1:
+                self.get_logger().error(
+                    f'Robot TỪ CHỐI điểm queue: code={res.result_code.value}, msg="{res.message}"',
                     throttle_duration_sec=1.0
                 )
+                return
+            self._accepted_points += 1
+            if self._accepted_points % 20 == 0:
+                self.get_logger().info(f'QueueTrajPoint accepted count={self._accepted_points}')
+            if self._queue_debug_log_count < 5:
+                self._queue_debug_log_count += 1
+                self.get_logger().info(
+                    f'Queue accepted sample#{self._queue_debug_log_count}: '
+                    f'svc={self._active_queue_service_name}, '
+                    f't0={request_time_hint()}'
+                )
         except Exception as e:
-            self.get_logger().error(f'Lỗi result FollowJointTrajectory: {e}')
+            self.get_logger().error(f'Lỗi khi gọi queue_traj_point: {e}')
+
+    def _select_queue_client(self):
+        if self._queue_point_cli.wait_for_service(timeout_sec=0.01):
+            return self._queue_point_cli
+        if self._queue_point_cli_alt.wait_for_service(timeout_sec=0.01):
+            return self._queue_point_cli_alt
+        if self._queue_point_cli_alt2.wait_for_service(timeout_sec=0.01):
+            return self._queue_point_cli_alt2
+        return None
 
     def _log_runtime_rates(self):
         now = self.get_clock().now()
@@ -615,12 +639,12 @@ class CartesianStreamer(Node):
         if elapsed < 5.0:
             return
         tick_hz = self._tick_count / elapsed
-        sent_goal_hz = self._goal_sent_count / elapsed
+        queue_send_hz = self._queue_sent_count / elapsed
         self.get_logger().info(
-            f'Runtime rate: tick_hz={tick_hz:.1f}, sent_goal_hz={sent_goal_hz:.1f}'
+            f'Runtime rate: tick_hz={tick_hz:.1f}, queue_send_hz={queue_send_hz:.1f}'
         )
         self._tick_count = 0
-        self._goal_sent_count = 0
+        self._queue_sent_count = 0
         self._rate_window_start = now
 
     def _check_no_motion_watchdog(self):
@@ -632,9 +656,11 @@ class CartesianStreamer(Node):
         if since_motion >= NO_MOTION_WARN_SEC and since_warn >= NO_MOTION_WARN_SEC:
             self._last_warn_time = now
             self.get_logger().warn(
-                'FollowJointTrajectory goal đã được accept nhưng joint_states hầu như không đổi. '
-                'Khả năng controller không execute trajectory (HOLD/INTERLOCK/CYCLE/REMOTE).'
+                'QueueTrajPoint đã được accept nhưng joint_states hầu như không đổi. '
             )
+
+def request_time_hint():
+    return f"{POINT_DURATION_SEC:.4f}s"
 
 
 # ═══════════════════════════════════════════════════════════════════
