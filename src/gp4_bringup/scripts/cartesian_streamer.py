@@ -64,6 +64,9 @@ WS_Z = ( 0.05, 0.8)
 
 # Thời gian mỗi điểm (30 Hz)
 POINT_DURATION_SEC = 1.0 / 30.0
+# Queue point duration nhỉnh hơn chu kỳ gửi để tránh starvation.
+QUEUE_POINT_DURATION_SEC = 0.04
+QUEUE_RETRY_BACKOFF_SEC = 0.01
 
 # IK timeout
 IK_TIMEOUT_SEC = 0.2
@@ -78,11 +81,21 @@ MAX_JOINT_DELTA = 0.5    # Tăng lên để cho phép di chuyển rõ rệt tron
 NO_MOTION_WARN_SEC = 3.0
 NO_MOTION_EPS_RAD = 1e-3
 NO_MOTION_MIN_ACCEPTED_POINTS = 6
+QUEUE_PREBUFFER_POINTS = 4
+STREAM_STATE_IDLE = 'idle'
+STREAM_STATE_SEEDING = 'seeding'
+STREAM_STATE_PREBUFFERING = 'prebuffering'
+STREAM_STATE_STREAMING = 'streaming'
 
 
 class CartesianStreamer(Node):
 
-    def __init__(self):
+    def __init__(
+        self,
+        queue_dt_sec: float = QUEUE_POINT_DURATION_SEC,
+        prebuffer_points: int = QUEUE_PREBUFFER_POINTS,
+        retry_backoff_sec: float = QUEUE_RETRY_BACKOFF_SEC,
+    ):
         super().__init__('cartesian_streamer')
 
         self._cb = ReentrantCallbackGroup()
@@ -91,16 +104,31 @@ class CartesianStreamer(Node):
         self._current_joints: list[float] = [0.0] * 6
         self._got_joints = False
         self._queue_mode_active = False
-        self._first_queue_point_sent = False
+        self._stream_state = STREAM_STATE_IDLE
         self._queue_call_inflight = False
         self._accepted_points = 0
         self._queue_debug_log_count = 0
         self._active_queue_service_name = ''
+        self._pending_point_to_resend: JointTrajectoryPoint | None = None
+        self._last_queued_joints: list[float] = [0.0] * 6
+        self._queue_dt_sec = max(queue_dt_sec, 0.01)
+        self._prebuffer_target = max(prebuffer_points, 1)
+        self._retry_backoff_sec = max(retry_backoff_sec, 0.0)
+        self._accepted_since_seed = 0
+        self._next_send_not_before = self.get_clock().now()
         self._last_motion_time = self.get_clock().now()
         self._last_warn_time = self.get_clock().now()
         self._tick_count = 0
         self._queue_sent_count = 0
         self._rate_window_start = self.get_clock().now()
+        self._window_ack_count = 0
+        self._window_busy_count = 0
+        self._window_retry_count = 0
+        self._window_reject_count = 0
+        self._window_max_joint_delta = 0.0
+        self._last_ack_time = None
+        self._window_ack_interval_sum = 0.0
+        self._window_ack_interval_count = 0
 
         # Target Cartesian pose (được smooth từng bước)
         self._target_pose: Pose | None = None
@@ -187,6 +215,7 @@ class CartesianStreamer(Node):
             self._got_joints = True
             self._last_ok_joints = list(self._current_joints)
             self._prev_joint_snapshot = list(self._current_joints)
+            self._last_queued_joints = list(self._current_joints)
             self.get_logger().info(
                 'Nhận joint_states: '
                 + str([f'{v:.3f}' for v in self._current_joints])
@@ -280,7 +309,10 @@ class CartesianStreamer(Node):
             )
             if res.result_code.value == 1:
                 self._queue_mode_active = True
-                self._first_queue_point_sent = False
+                self._stream_state = STREAM_STATE_SEEDING
+                self._accepted_since_seed = 0
+                self._pending_point_to_resend = None
+                self._next_send_not_before = self.get_clock().now()
                 self.get_logger().info('✓ Point Queue Mode active. Sẵn sàng stream.')
             else:
                 self.get_logger().error(f'StartPointQueueMode FAILED: {res.message}')
@@ -324,9 +356,12 @@ class CartesianStreamer(Node):
             self._tick_count += 1
             self._log_runtime_rates()
             self._check_no_motion_watchdog()
+            now = self.get_clock().now()
+            if now < self._next_send_not_before:
+                return
 
             # ── Bước 0: Khởi tạo ─────────────────────────────────────
-            if not self._first_queue_point_sent:
+            if self._stream_state == STREAM_STATE_SEEDING:
                 # Bootstrap initial EE pose via FK
                 initial_pose = self._solve_fk_sync(list(self._current_joints))
                 if initial_pose:
@@ -340,7 +375,6 @@ class CartesianStreamer(Node):
 
                 # Quy tắc queue mode: điểm đầu tiên phải đúng trạng thái hiện tại, t=0, v=0.
                 if self._send_joint_point(list(self._current_joints), force_seed=True):
-                    self._first_queue_point_sent = True
                     self.get_logger().info('Đã gửi first queue point (current joints).')
                 return
 
@@ -382,6 +416,7 @@ class CartesianStreamer(Node):
                 throttle_duration_sec=2.0)
 
             # ── Bước 3: Gửi xuống robot ──────────────────────────────
+            self._window_max_joint_delta = max(self._window_max_joint_delta, max_delta)
             self._send_joint_point(joint_solution)
 
             # ── Bước 4: Publish feedback EE pose ─────────────────────
@@ -582,12 +617,15 @@ class CartesianStreamer(Node):
             point.positions = list(self._current_joints)
             point.velocities = [0.0] * len(JOINT_NAMES)
             point.time_from_start = Duration(sec=0, nanosec=0)
+        elif self._pending_point_to_resend is not None:
+            # Retry chính điểm bị BUSY trước đó.
+            point = self._pending_point_to_resend
         else:
             point.positions = [float(j) for j in joints]
-            dt = max(POINT_DURATION_SEC, 1e-3)
+            dt = max(self._queue_dt_sec, 1e-3)
             point.velocities = [
-                float((target - current) / dt)
-                for target, current in zip(joints, self._current_joints)
+                float((target - queued) / dt)
+                for target, queued in zip(joints, self._last_queued_joints)
             ]
             sec = int(dt)
             nanosec = int((dt - sec) * 1e9)
@@ -596,22 +634,60 @@ class CartesianStreamer(Node):
 
         self._queue_call_inflight = True
         self._queue_sent_count += 1
+        self._next_send_not_before = self.get_clock().now()
         fut = queue_cli.call_async(request)
-        fut.add_done_callback(self._on_queue_result)
+        fut.add_done_callback(lambda f, p=point: self._on_queue_result(f, p))
         return True
 
-    def _on_queue_result(self, future):
+    def _on_queue_result(self, future, sent_point: JointTrajectoryPoint):
         self._queue_call_inflight = False
         try:
             res = future.result()
-            # SUCCESS của QueueResultEnum là 1, không phải 0.
-            if res.result_code.value != 1:
-                self.get_logger().error(
-                    f'Robot TỪ CHỐI điểm queue: code={res.result_code.value}, msg="{res.message}"',
+            code = getattr(res.result_code, 'value', -1) if hasattr(res, 'result_code') else -1
+            msg = getattr(res, 'message', '')
+            if code == 4:
+                # BUSY: giữ lại điểm để resend ở tick tiếp theo.
+                self._pending_point_to_resend = sent_point
+                self._window_busy_count += 1
+                self._window_retry_count += 1
+                backoff_ns = int(self._retry_backoff_sec * 1e9)
+                self._next_send_not_before = self.get_clock().now() + Duration(
+                    sec=backoff_ns // 1_000_000_000,
+                    nanosec=backoff_ns % 1_000_000_000
+                )
+                self.get_logger().warn(
+                    f'Queue BUSY, sẽ resend điểm: msg="{msg}"',
                     throttle_duration_sec=1.0
                 )
                 return
+            # Tương thích cả 2 biến thể firmware (SUCCESS=0 hoặc SUCCESS=1).
+            if code not in (0, 1):
+                self.get_logger().error(
+                    f'Yaskawa TỪ CHỐI ĐIỂM! Mã lỗi (result_code): {code}, Message: "{msg}"',
+                    throttle_duration_sec=1.0
+                )
+                self._pending_point_to_resend = None
+                self._window_reject_count += 1
+                return
+            self._pending_point_to_resend = None
+            self._last_queued_joints = list(sent_point.positions)
             self._accepted_points += 1
+            self._window_ack_count += 1
+            now = self.get_clock().now()
+            if self._last_ack_time is not None:
+                self._window_ack_interval_sum += (now - self._last_ack_time).nanoseconds / 1e9
+                self._window_ack_interval_count += 1
+            self._last_ack_time = now
+            self._next_send_not_before = now
+            if self._stream_state == STREAM_STATE_SEEDING:
+                self._stream_state = STREAM_STATE_PREBUFFERING
+                self._accepted_since_seed = 0
+                self.get_logger().info('Seed ACK nhận được, bắt đầu prebuffer.')
+            elif self._stream_state == STREAM_STATE_PREBUFFERING:
+                self._accepted_since_seed += 1
+                if self._accepted_since_seed >= self._prebuffer_target:
+                    self._stream_state = STREAM_STATE_STREAMING
+                    self.get_logger().info('Pre-buffer hoàn tất, bắt đầu stream ổn định.')
             if self._accepted_points % 20 == 0:
                 self.get_logger().info(f'QueueTrajPoint accepted count={self._accepted_points}')
             if self._queue_debug_log_count < 5:
@@ -619,10 +695,10 @@ class CartesianStreamer(Node):
                 self.get_logger().info(
                     f'Queue accepted sample#{self._queue_debug_log_count}: '
                     f'svc={self._active_queue_service_name}, '
-                    f't0={request_time_hint()}'
+                    f't0={self._queue_dt_sec:.4f}s, code={code}, msg="{msg}"'
                 )
         except Exception as e:
-            self.get_logger().error(f'Lỗi khi gọi queue_traj_point: {e}')
+            self.get_logger().error(f'Lỗi khi nhận phản hồi từ queue_traj_point: {e}')
 
     def _select_queue_client(self):
         if self._queue_point_cli.wait_for_service(timeout_sec=0.01):
@@ -640,12 +716,32 @@ class CartesianStreamer(Node):
             return
         tick_hz = self._tick_count / elapsed
         queue_send_hz = self._queue_sent_count / elapsed
+        ack_hz = self._window_ack_count / elapsed
+        busy_hz = self._window_busy_count / elapsed
+        inter_ack_ms = (
+            (self._window_ack_interval_sum / self._window_ack_interval_count) * 1000.0
+            if self._window_ack_interval_count > 0 else 0.0
+        )
         self.get_logger().info(
-            f'Runtime rate: tick_hz={tick_hz:.1f}, queue_send_hz={queue_send_hz:.1f}'
+            'Runtime rate: '
+            f'state={self._stream_state}, '
+            f'tick_hz={tick_hz:.1f}, queue_send_hz={queue_send_hz:.1f}, '
+            f'ack_hz={ack_hz:.1f}, busy_hz={busy_hz:.1f}, '
+            f'retry_count={self._window_retry_count}, '
+            f'reject_count={self._window_reject_count}, '
+            f'inter_ack_ms={inter_ack_ms:.1f}, '
+            f'max_joint_delta={self._window_max_joint_delta:.3f}'
         )
         self._tick_count = 0
         self._queue_sent_count = 0
         self._rate_window_start = now
+        self._window_ack_count = 0
+        self._window_busy_count = 0
+        self._window_retry_count = 0
+        self._window_reject_count = 0
+        self._window_max_joint_delta = 0.0
+        self._window_ack_interval_sum = 0.0
+        self._window_ack_interval_count = 0
 
     def _check_no_motion_watchdog(self):
         if self._accepted_points < NO_MOTION_MIN_ACCEPTED_POINTS:
@@ -657,11 +753,8 @@ class CartesianStreamer(Node):
             self._last_warn_time = now
             self.get_logger().warn(
                 'QueueTrajPoint đã được accept nhưng joint_states hầu như không đổi. '
+                'Giữ nguyên pipeline (không auto-recovery), hãy tune queue_dt/prebuffer/backoff.'
             )
-
-def request_time_hint():
-    return f"{POINT_DURATION_SEC:.4f}s"
-
 
 # ═══════════════════════════════════════════════════════════════════
 # DEMO NODE: Test Cartesian trajectory
@@ -756,6 +849,15 @@ class CartesianDemoPublisher(Node):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        '--queue-dt', type=float, default=QUEUE_POINT_DURATION_SEC,
+        help='time_from_start cho mỗi queue point (giây), ví dụ 0.04')
+    parser.add_argument(
+        '--prebuffer', type=int, default=QUEUE_PREBUFFER_POINTS,
+        help='số điểm prebuffer trước khi vào streaming')
+    parser.add_argument(
+        '--retry-backoff-ms', type=float, default=QUEUE_RETRY_BACKOFF_SEC * 1000.0,
+        help='backoff (ms) khi queue trả BUSY trước khi resend')
+    parser.add_argument(
         '--demo', choices=['circle', 'line', 'lissajous'],
         default=None,
         help='Chạy demo pattern (không cần AI node ngoài)')
@@ -765,7 +867,11 @@ def main():
 
     executor = MultiThreadedExecutor(num_threads=4)
 
-    streamer = CartesianStreamer()
+    streamer = CartesianStreamer(
+        queue_dt_sec=max(args.queue_dt, 0.01),
+        prebuffer_points=max(args.prebuffer, 1),
+        retry_backoff_sec=max(args.retry_backoff_ms, 0.0) / 1000.0,
+    )
     executor.add_node(streamer)
 
     if args.demo:
