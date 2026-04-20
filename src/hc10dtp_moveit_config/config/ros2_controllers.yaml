@@ -1,0 +1,25 @@
+# ros2_control controller configuration for HC10DTP
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz
+
+    hc10dtp_arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+hc10dtp_arm_controller:
+  ros__parameters:
+    joints:
+      - joint_1_s
+      - joint_2_l
+      - joint_3_u
+      - joint_4_r
+      - joint_5_b
+      - joint_6_t
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity

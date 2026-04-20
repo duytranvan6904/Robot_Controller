@@ -1,0 +1,37 @@
+# Joint limits for HC10DTP
+# HC10DTP has slower max velocities than GP4 (collaborative robot safety)
+
+default_velocity_scaling_factor: 0.1
+default_acceleration_scaling_factor: 0.1
+
+joint_limits:
+  joint_1_s:
+    has_velocity_limits: true
+    max_velocity: 2.2689280275926285    # 130 deg/s
+    has_acceleration_limits: false
+    max_acceleration: 0
+  joint_2_l:
+    has_velocity_limits: true
+    max_velocity: 2.2689280275926285    # 130 deg/s
+    has_acceleration_limits: false
+    max_acceleration: 0
+  joint_3_u:
+    has_velocity_limits: true
+    max_velocity: 3.1415926535897931    # 180 deg/s
+    has_acceleration_limits: false
+    max_acceleration: 0
+  joint_4_r:
+    has_velocity_limits: true
+    max_velocity: 3.1415926535897931    # 180 deg/s
+    has_acceleration_limits: false
+    max_acceleration: 0
+  joint_5_b:
+    has_velocity_limits: true
+    max_velocity: 4.3633231299858240    # 250 deg/s
+    has_acceleration_limits: false
+    max_acceleration: 0
+  joint_6_t:
+    has_velocity_limits: true
+    max_velocity: 4.3633231299858240    # 250 deg/s
+    has_acceleration_limits: false
+    max_acceleration: 0

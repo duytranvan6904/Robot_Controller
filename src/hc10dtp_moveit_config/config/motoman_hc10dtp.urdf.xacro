@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="motoman_hc10dtp">
+    <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
+    <xacro:arg name="use_fake_hardware"       default="false" />
+    <xacro:arg name="robot_ip"                default="192.168.1.33" />
+    <xacro:arg name="controller_port"         default="50240" />
+
+    <!-- Import HC10DTP URDF -->
+    <xacro:include filename="$(find motoman_hc10dtp_support)/urdf/hc10dtp.urdf" />
+
+    <!-- Import ros2_control xacro -->
+    <xacro:include filename="motoman_hc10dtp.ros2_control.xacro" />
+
+    <!-- Instantiate ros2_control macro -->
+    <xacro:motoman_hc10dtp_ros2_control
+        name="HC10DTPRealSystem"
+        initial_positions_file="$(arg initial_positions_file)"
+        use_fake_hardware="$(arg use_fake_hardware)"
+        robot_ip="$(arg robot_ip)"
+        controller_port="$(arg controller_port)"
+    />
+</robot>

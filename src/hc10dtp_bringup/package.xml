@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>hc10dtp_bringup</name>
+  <version>0.0.1</version>
+  <description>Bringup launch files and scripts for HC10DTP MoveIt + Point Queue Mode streaming</description>
+
+  <maintainer email="duy@example.com">Duy Tran</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>hc10dtp_moveit_config</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
