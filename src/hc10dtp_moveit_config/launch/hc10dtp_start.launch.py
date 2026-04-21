@@ -1,17 +1,17 @@
 """
-gp4_start.launch.py
-────────────────────
-Launch file hoàn chỉnh cho Yaskawa GP4 với MotoROS2 driver.
+hc10dtp_start.launch.py
+────────────────────────
+Launch file hoàn chỉnh cho Yaskawa HC10DTP với MotoROS2 driver.
 
 Kiến trúc:
   - MotoROS2 driver chạy trên robot (cung cấp /yaskawa/follow_joint_trajectory
     và /yaskawa/joint_states)
   - File này khởi động: move_group + RViz + robot_state_publisher +
-    joint_state_publisher + static TF
+    restamp_joint_states + static TF
 
 Cách dùng:
   1. Đảm bảo MotoROS2 driver đang chạy trên robot
-  2. ros2 launch gp4_moveit_config gp4_start.launch.py
+  2. ros2 launch hc10dtp_moveit_config hc10dtp_start.launch.py
   3. Dùng RViz để plan & execute, robot thật sẽ chạy theo
 """
 
@@ -34,9 +34,9 @@ def generate_launch_description():
 
     # ── MoveIt config ────────────────────────────────────────────────────
     moveit_config = (
-        MoveItConfigsBuilder("motoman_gp4", package_name="gp4_moveit_config")
-        .robot_description(file_path="config/motoman_gp4.urdf.xacro")
-        .robot_description_semantic(file_path="config/motoman_gp4.srdf")
+        MoveItConfigsBuilder("motoman_hc10dtp", package_name="hc10dtp_moveit_config")
+        .robot_description(file_path="config/motoman_hc10dtp.urdf.xacro")
+        .robot_description_semantic(file_path="config/motoman_hc10dtp.srdf")
         .trajectory_execution(file_path="config/moveit_controllers.yaml")
         .to_moveit_configs()
     )
@@ -64,7 +64,7 @@ def generate_launch_description():
 
     # ── RViz ─────────────────────────────────────────────────────────────
     rviz_config_path = os.path.join(
-        get_package_share_directory("gp4_moveit_config"),
+        get_package_share_directory("hc10dtp_moveit_config"),
         "config",
         "moveit.rviz",
     )
@@ -92,21 +92,6 @@ def generate_launch_description():
         parameters=[moveit_config.robot_description],
     )
 
-    # ── Joint State Publisher ────────────────────────────────────────────
-    #    Lắng nghe /yaskawa/joint_states từ MotoROS2 driver
-    joint_state_publisher = Node(
-        package="joint_state_publisher",
-        executable="joint_state_publisher",
-        name="joint_state_publisher",
-        parameters=[
-            moveit_config.robot_description,
-            {
-                "rate": 43,
-                "source_list": ["/yaskawa/joint_states_synced"],
-            },
-        ],
-    )
-
     # ── Static TF (world -> base_link) ───────────────────────────────────
     static_tf = Node(
         package="tf2_ros",
@@ -119,7 +104,7 @@ def generate_launch_description():
 
     # ── Restamp Node ─────────────────────────────────────────────────────
     restamp_node = Node(
-        package="gp4_bringup",
+        package="hc10dtp_bringup",
         executable="restamp_joint_states.py",
         name="restamp_joint_states",
         output="screen",
@@ -130,7 +115,6 @@ def generate_launch_description():
             db_arg,
             static_tf,
             robot_state_publisher,
-            joint_state_publisher,
             run_move_group_node,
             rviz_node,
             restamp_node,

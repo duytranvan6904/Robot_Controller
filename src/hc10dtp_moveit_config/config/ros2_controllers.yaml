@@ -1,16 +1,15 @@
-# This config file is used by ros2_control
+# ros2_control controller configuration for HC10DTP
 controller_manager:
   ros__parameters:
     update_rate: 100  # Hz
 
-    gp4_arm_controller:
+    hc10dtp_arm_controller:
       type: joint_trajectory_controller/JointTrajectoryController
-
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
 
-gp4_arm_controller:
+hc10dtp_arm_controller:
   ros__parameters:
     joints:
       - joint_1_s

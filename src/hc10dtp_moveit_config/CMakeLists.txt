@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(gp4_moveit_config)
+project(hc10dtp_moveit_config)
 
 find_package(ament_cmake REQUIRED)
 

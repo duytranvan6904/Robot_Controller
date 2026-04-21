@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(gp4_bringup)
+project(hc10dtp_bringup)
 
 find_package(ament_cmake REQUIRED)
 
@@ -9,7 +9,7 @@ install(
 )
 
 install(
-  PROGRAMS scripts/test_continuous_move.py scripts/servo_bridge.py scripts/restamp_joint_states.py
+  PROGRAMS scripts/cartesian_streamer_hc10dtp.py scripts/restamp_joint_states.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

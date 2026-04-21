@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SRDF for Yaskawa Motoman HC10DTP
+  Defines the planning group, named states, virtual joint, and collision pairs.
+-->
+<robot name="motoman_hc10dtp">
+    <!-- Planning group: full arm chain from base_link to tool0 -->
+    <group name="hc10dtp_arm">
+        <chain base_link="base_link" tip_link="tool0"/>
+    </group>
+
+    <!-- Named states -->
+    <group_state name="home" group="hc10dtp_arm">
+        <joint name="joint_1_s" value="0"/>
+        <joint name="joint_2_l" value="0"/>
+        <joint name="joint_3_u" value="0"/>
+        <joint name="joint_4_r" value="0"/>
+        <joint name="joint_5_b" value="0"/>
+        <joint name="joint_6_t" value="0"/>
+    </group_state>
+
+    <group_state name="ready" group="hc10dtp_arm">
+        <joint name="joint_1_s" value="0"/>
+        <joint name="joint_2_l" value="0"/>
+        <joint name="joint_3_u" value="-1.5708"/>
+        <joint name="joint_4_r" value="0"/>
+        <joint name="joint_5_b" value="0"/>
+        <joint name="joint_6_t" value="0"/>
+    </group_state>
+
+    <!-- Virtual joint: fixed base -->
+    <virtual_joint name="world_joint" type="fixed" parent_frame="world" child_link="base_link"/>
+
+    <!-- Disable collision pairs (adjacent links and never-colliding pairs) -->
+    <disable_collisions link1="base_link" link2="link_1_s" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="link_2_l" reason="Never"/>
+    <disable_collisions link1="link_1_s" link2="link_2_l" reason="Adjacent"/>
+    <disable_collisions link1="link_1_s" link2="link_3_u" reason="Never"/>
+    <disable_collisions link1="link_2_l" link2="link_3_u" reason="Adjacent"/>
+    <disable_collisions link1="link_3_u" link2="link_4_r" reason="Adjacent"/>
+    <disable_collisions link1="link_3_u" link2="link_5_b" reason="Never"/>
+    <disable_collisions link1="link_3_u" link2="link_6_t" reason="Never"/>
+    <disable_collisions link1="link_4_r" link2="link_5_b" reason="Adjacent"/>
+    <disable_collisions link1="link_5_b" link2="link_6_t" reason="Adjacent"/>
+</robot>
